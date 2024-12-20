@@ -43,7 +43,7 @@ def preprocess_data(file_path):
     return indexed_texts, word_to_idx, idx_to_word, vocab_size
 
 # 加载并预处理数据
-train_data, word_to_idx, idx_to_word, vocab_size = preprocess_data('./data/ans.txt')
+train_data, word_to_idx, idx_to_word, vocab_size = preprocess_data('./data/data.txt')
 
 # 划分训练集和测试集
 train_data, test_data = train_test_split(train_data, test_size=0.2, random_state=42)
@@ -190,35 +190,53 @@ def load_model(model, save_path="best_model.pth"):
 
 # 压缩并解码
 def compress_and_decode(model, input_text, word_to_idx, idx_to_word):
-    input_tensor = torch.tensor([word_to_idx.get(word, 0) for word in input_text.split()]).unsqueeze(0)
+    # Convert words to indices
+    input_tensor = torch.tensor([word_to_idx.get(word, 0) for word in input_text]).unsqueeze(0)  # Shape: (1, seq_len)
+    
+    # Move the tensor to the same device as the model
+    input_tensor = input_tensor.to(device)
     
     model.eval()
     with torch.no_grad():
-        # 压缩
-        compressed = model.encoder(input_tensor)
-        compressed = model.fc1(compressed.mean(dim=0))  # 压缩为 target_dim
+        # First, we need to embed the input tensor to get (seq_len, batch_size, embed_size)
+        input_tensor = model.embedding(input_tensor)  # Embedding: Shape becomes (1, seq_len, embed_size)
+
+        # Now, the input_tensor has the correct shape for the transformer_encoder
+        encoded = model.transformer_encoder(input_tensor.permute(1, 0, 2))  # (seq_len, batch_size, embed_size)
+
+        # Compress the encoded output to target_dim
+        compressed = model.fc1(encoded.mean(dim=0))  # Mean pooling, then reduce to target_dim
         
-        # 解码
-        decoded = model.fc2(compressed).unsqueeze(0).repeat(input_tensor.size(0), 1, 1)
+        # Decode the compressed representation
+        decoded = model.fc2(compressed).unsqueeze(0).repeat(encoded.size(0), 1, 1)  # Repeat to match input shape
         decoded_output = model.fc3(decoded)
+        
+        # Get the most probable word indices
         decoded_indices = decoded_output.argmax(dim=-1).squeeze(0)
     
-    # 将解码结果转换为文本
+    # Convert indices back to words
     decoded_words = [idx_to_word[idx.item()] for idx in decoded_indices]
     return ' '.join(decoded_words)
 
+
 # 计算BLEU分数
 def calculate_bleu_score(original, decoded):
-    original_tokens = original.split()
-    decoded_tokens = decoded.split()
+    original_tokens = original
+    decoded_tokens = decoded
     return sentence_bleu([original_tokens], decoded_tokens)
 
-# 测试样本
-sample_text = test_data[0]  # 从测试集中选择一个样本
-compressed_result = compress_and_decode(model, sample_text, word_to_idx, idx_to_word)
-print("原始文本：", sample_text)
+# Fixing the sample_text to use the actual tokens (words) from the test data, not indices
+sample_text = test_data[2]  # This is a list of indices, so convert it to words
+
+# Convert the indices back to words
+sample_text_words = [idx_to_word[idx] for idx in sample_text]
+
+compressed_result = compress_and_decode(model, sample_text_words, word_to_idx, idx_to_word)
+
+print("原始文本：", ' '.join(sample_text_words))  # Joining words with spaces for printing
 print("压缩并解码后的文本：", compressed_result)
 
-# 计算还原准确率
-bleu_score = calculate_bleu_score(sample_text, compressed_result)
+# Calculate BLEU score
+bleu_score = calculate_bleu_score(sample_text_words, compressed_result.split())
 print(f"BLEU Score: {bleu_score}")
+
